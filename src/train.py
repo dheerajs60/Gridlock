@@ -18,7 +18,7 @@ def train_and_evaluate():
     print("Step 2: Preprocessing and Feature Engineering...")
     # Concatenate train and test to ensure consistent feature engineering
     all_df = pd.concat([train, test], ignore_index=True)
-    all_feat = build_features(all_df)
+    all_feat = build_features(all_df, train)
     
     # Split back to train and test
     train_feat = all_feat[all_feat['demand'].notna()].copy()
@@ -34,34 +34,33 @@ def train_and_evaluate():
     
     features = [
         'RoadType', 'NumberofLanes', 'LargeVehicles', 'Landmarks', 'Temperature', 'Weather',
-        'hour', 'minute', 'time_minutes', 'sin_time', 'cos_time', 'latitude', 'longitude',
-        'geohash_prefix4', 'geohash_prefix5'
+        'latitude', 'longitude',
+        'geohash', 'geohash_prefix4', 'geohash_prefix5',
+        'early_48', 'early_49', 'early_49_prefix5', 'early_49_prefix4',
+        'demand_day48_t', 'demand_day48_t_minus_15', 'demand_day48_t_minus_30', 'demand_day48_t_minus_60',
+        'demand_day48_t_plus_15', 'demand_day48_t_plus_30', 'demand_day48_t_plus_60',
+        'demand_day48_rolling_mean_30', 'demand_day48_rolling_mean_60',
+        'day48_overall_mean', 'day48_overall_std', 'day48_overall_max', 'day48_overall_min',
+        'day48_prefix5_mean', 'day48_prefix5_std', 'day48_prefix5_max', 'day48_prefix5_min',
+        'day48_prefix4_mean', 'day48_prefix4_std', 'day48_prefix4_max', 'day48_prefix4_min',
+        'demand_day48_prefix5_t', 'demand_day48_prefix4_t', 'city_profile_day48'
     ]
     
     target = 'demand'
     
-    # Split into Day 48 and Day 49
-    train_48 = train_feat[train_feat['day'] == 48].copy()
+    # Split out Day 49 training rows
     train_49 = train_feat[train_feat['day'] == 49].copy()
     
-    print(f"Train Day 48 shape: {train_48.shape}")
     print(f"Train Day 49 shape: {train_49.shape}")
     print(f"Test Day 49 shape: {test_feat.shape}")
     
-    # --- SPATIOTEMPORAL KEY-LOOKUP SETUP ---
-    # Create the lookup dictionary mapping (geohash (decoded), time_minutes) to demand from Day 48
-    # Wait, geohash is ordinal encoded! Let's use the original 'geohash' column from 'train' for the lookup.
-    
-    train_48_original = train[train['day'] == 48].copy()
-    train_48_original['time_minutes'] = train_48_original['timestamp'].apply(lambda x: int(x.split(':')[0])*60 + int(x.split(':')[1]))
-    lookup_dict = train_48_original.set_index(['geohash', 'time_minutes'])['demand'].to_dict()
-    
-    test_original = test.copy()
-    test_original['time_minutes'] = test_original['timestamp'].apply(lambda x: int(x.split(':')[0])*60 + int(x.split(':')[1]))
-    
-    # --- PURE TABULAR REGRESSION FALLBACK SETUP ---
-    # K-Fold Cross Validation Setup on Day 48
+    # K-Fold Cross Validation Setup on Day 49
     kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    
+    # OOF prediction arrays
+    oof_lgb = np.zeros(len(train_49))
+    oof_xgb = np.zeros(len(train_49))
+    oof_cb = np.zeros(len(train_49))
     
     # Test prediction arrays
     test_lgb = np.zeros(len(test_feat))
@@ -69,78 +68,85 @@ def train_and_evaluate():
     test_cb = np.zeros(len(test_feat))
     
     lgb_params = {
-        'n_estimators': 1500,
-        'learning_rate': 0.03,
-        'num_leaves': 63,
-        'subsample': 0.8,
-        'colsample_bytree': 0.8,
-        'random_state': 42,
-        'verbose': -1
+        'n_estimators': 800,
+        'learning_rate': 0.05,
+        'num_leaves': 31,
+        'verbose': -1,
+        'random_state': 42
     }
     
     xgb_params = {
-        'n_estimators': 1500,
-        'learning_rate': 0.03,
-        'max_depth': 6,
-        'subsample': 0.8,
-        'colsample_bytree': 0.8,
-        'random_state': 42,
-        'verbosity': 0
+        'n_estimators': 800,
+        'learning_rate': 0.05,
+        'max_depth': 5,
+        'verbosity': 0,
+        'random_state': 42
     }
     
     cb_params = {
-        'iterations': 1500,
-        'learning_rate': 0.03,
-        'depth': 6,
-        'random_seed': 42,
-        'verbose': 0
+        'iterations': 800,
+        'learning_rate': 0.05,
+        'depth': 5,
+        'verbose': 0,
+        'random_seed': 42
     }
     
-    print("\nStep 3: Starting Cross-Validation & Training on Day 48 (Fallback Model)...")
-    for fold, (train_idx, val_idx) in enumerate(kf.split(train_48)):
+    print("\nStep 3: Starting Cross-Validation & Training on Day 49 early morning...")
+    for fold, (train_idx, val_idx) in enumerate(kf.split(train_49)):
         print(f"\n--- Training Fold {fold} ---")
         
-        X_train, y_train = train_48.iloc[train_idx][features], train_48.iloc[train_idx][target]
-        X_val, y_val = train_48.iloc[val_idx][features], train_48.iloc[val_idx][target]
+        X_train, y_train = train_49.iloc[train_idx][features], train_49.iloc[train_idx][target]
+        X_val, y_val = train_49.iloc[val_idx][features], train_49.iloc[val_idx][target]
         
         # 1. LightGBM
         model_lgb = lgb.LGBMRegressor(**lgb_params)
         model_lgb.fit(X_train, y_train, eval_set=[(X_val, y_val)], callbacks=[lgb.early_stopping(50, verbose=False)])
+        oof_lgb[val_idx] = np.clip(model_lgb.predict(X_val), 0.0, 1.0)
         test_lgb += np.clip(model_lgb.predict(test_feat[features]), 0.0, 1.0) / 5.0
         
         # 2. XGBoost
         model_xgb = xgb.XGBRegressor(**xgb_params, early_stopping_rounds=50)
         model_xgb.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+        oof_xgb[val_idx] = np.clip(model_xgb.predict(X_val), 0.0, 1.0)
         test_xgb += np.clip(model_xgb.predict(test_feat[features]), 0.0, 1.0) / 5.0
         
         # 3. CatBoost
         model_cb = cb.CatBoostRegressor(**cb_params, early_stopping_rounds=50)
         model_cb.fit(X_train, y_train, eval_set=(X_val, y_val), verbose=False)
+        oof_cb[val_idx] = np.clip(model_cb.predict(X_val), 0.0, 1.0)
         test_cb += np.clip(model_cb.predict(test_feat[features]), 0.0, 1.0) / 5.0
         
-    print("\nStep 4: Generating Submission File using Lookup Strategy + Fallback...")
-    fallback_preds = (test_lgb + test_xgb + test_cb) / 3.0
+        # Calculate fold metrics
+        r2_lgb = r2_score(y_val, oof_lgb[val_idx]) * 100
+        r2_xgb = r2_score(y_val, oof_xgb[val_idx]) * 100
+        r2_cb = r2_score(y_val, oof_cb[val_idx]) * 100
+        print(f"Fold {fold} R2 Scores -> LGBM: {r2_lgb:.4f}% | XGB: {r2_xgb:.4f}% | CatBoost: {r2_cb:.4f}%")
+        
+    print("\nStep 4: Evaluating Out-of-Fold (OOF) Metrics...")
+    y_49 = train_49[target].values
     
-    final_predictions = []
-    lookup_count = 0
-    fallback_count = 0
+    score_lgb = r2_score(y_49, oof_lgb) * 100
+    score_xgb = r2_score(y_49, oof_xgb) * 100
+    score_cb = r2_score(y_49, oof_cb) * 100
     
-    for idx, row in test_original.iterrows():
-        key = (row['geohash'], row['time_minutes'])
-        if key in lookup_dict:
-            final_predictions.append(lookup_dict[key])
-            lookup_count += 1
-        else:
-            final_predictions.append(fallback_preds[idx])
-            fallback_count += 1
-            
-    print(f"Predictions from exact historical matches: {lookup_count}")
-    print(f"Predictions from regression fallback model: {fallback_count}")
+    # Blended/Ensemble predictions
+    oof_ensemble = (oof_lgb + oof_xgb + oof_cb) / 3.0
+    score_ensemble = r2_score(y_49, oof_ensemble) * 100
+    
+    print("="*50)
+    print(f"OOF R2 Score LightGBM: {score_lgb:.4f}%")
+    print(f"OOF R2 Score XGBoost:  {score_xgb:.4f}%")
+    print(f"OOF R2 Score CatBoost: {score_cb:.4f}%")
+    print(f"OOF R2 Score Ensemble: {score_ensemble:.4f}%")
+    print("="*50)
+    
+    print("\nStep 5: Generating Submission File...")
+    final_preds = (test_lgb + test_xgb + test_cb) / 3.0
     
     # Construct submission dataframe
     submission = pd.DataFrame({
         'Index': test_feat['Index'].astype(int),
-        'demand': np.clip(final_predictions, 0.0, 1.0)
+        'demand': np.clip(final_preds, 0.0, 1.0)
     })
     
     # Validate structure
@@ -149,8 +155,13 @@ def train_and_evaluate():
     assert not submission['demand'].isna().any(), "Submission contains NaN values"
     assert (submission['demand'] >= 0.0).all() and (submission['demand'] <= 1.0).all(), "Predictions out of bounds"
     
+    # Verify index values match test file exactly
+    test_orig = pd.read_csv('test.csv')
+    assert (submission['Index'].values == test_orig['Index'].values).all(), "Index values do not match test file"
+    
     submission.to_csv('submission.csv', index=False)
     print("Submission file successfully saved to submission.csv!")
+    print("Validation passed: File shape is 41778 x 2, and all values are in bounds [0, 1].")
 
 if __name__ == "__main__":
     train_and_evaluate()
