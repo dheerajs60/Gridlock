@@ -4,3 +4,4 @@ __pycache__/
 scratch_*
 train.log
 test_combined_nonleaky.py
+test_residual_*

@@ -28,7 +28,7 @@ def train_and_evaluate():
     cat_cols = ['RoadType', 'Weather', 'LargeVehicles', 'Landmarks', 'geohash', 'geohash_prefix4', 'geohash_prefix5']
     encoder = OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)
     
-    # Fit encoder on train and transform both
+    # Fit encoder on all train and transform both
     train_feat[cat_cols] = encoder.fit_transform(train_feat[cat_cols].astype(str))
     test_feat[cat_cols] = encoder.transform(test_feat[cat_cols].astype(str))
     
@@ -36,18 +36,16 @@ def train_and_evaluate():
         'RoadType', 'NumberofLanes', 'LargeVehicles', 'Landmarks', 'Temperature', 'Weather',
         'hour', 'minute', 'time_minutes', 'sin_time', 'cos_time', 'latitude', 'longitude',
         'geohash', 'geohash_prefix4', 'geohash_prefix5',
-        'early_48', 'early_demand', 'early_demand_prefix5', 'early_demand_prefix4',
-        'demand_day48_prefix5_t', 'demand_day48_prefix4_t', 'city_profile_day48'
+        'early_48', 'early_49', 'geohash_ratio', 'scaled_demand48',
+        'p5_demand48_t', 'p4_demand48_t'
     ]
     
     target = 'demand'
     
-    # Split into Day 48 and Day 49
-    train_48 = train_feat[train_feat['day'] == 48].copy()
+    # We train GBDTs on Day 49 early morning (where residuals vary realistically)
     train_49 = train_feat[train_feat['day'] == 49].copy()
     
-    print(f"Train Day 48 shape: {train_48.shape}")
-    print(f"Train Day 49 shape: {train_49.shape}")
+    print(f"Train Day 49 early morning shape: {train_49.shape}")
     print(f"Test Day 49 shape: {test_feat.shape}")
     
     # K-Fold Cross Validation Setup on Day 49
@@ -59,14 +57,14 @@ def train_and_evaluate():
     oof_cb = np.zeros(len(train_49))
     
     # Test prediction arrays
-    test_lgb = np.zeros(len(test_feat))
-    test_xgb = np.zeros(len(test_feat))
-    test_cb = np.zeros(len(test_feat))
+    test_res_lgb = np.zeros(len(test_feat))
+    test_res_xgb = np.zeros(len(test_feat))
+    test_res_cb = np.zeros(len(test_feat))
     
     lgb_params = {
         'n_estimators': 1000,
         'learning_rate': 0.05,
-        'num_leaves': 63,
+        'num_leaves': 31,
         'verbose': -1,
         'random_state': 42
     }
@@ -74,7 +72,7 @@ def train_and_evaluate():
     xgb_params = {
         'n_estimators': 1000,
         'learning_rate': 0.05,
-        'max_depth': 6,
+        'max_depth': 5,
         'verbosity': 0,
         'random_state': 42
     }
@@ -82,39 +80,43 @@ def train_and_evaluate():
     cb_params = {
         'iterations': 1000,
         'learning_rate': 0.05,
-        'depth': 6,
+        'depth': 5,
         'verbose': 0,
         'random_seed': 42
     }
     
-    print("\nStep 3: Starting Cross-Validation & Training on combined leak-free dataset...")
+    print("\nStep 3: Starting Cross-Validation & Training on Residual GBDT Ensemble...")
     for fold, (train_idx, val_idx) in enumerate(kf.split(train_49)):
         print(f"\n--- Training Fold {fold} ---")
         
-        # Training fold: Day 48 (entire day) + 4/5 of Day 49 (early morning)
-        fold_train_49 = train_49.iloc[train_idx]
-        fold_train = pd.concat([train_48, fold_train_49], ignore_index=True)
-        
-        X_train, y_train = fold_train[features], fold_train[target]
+        # Split features and target
+        X_train, y_train = train_49.iloc[train_idx][features], train_49.iloc[train_idx][target]
         X_val, y_val = train_49.iloc[val_idx][features], train_49.iloc[val_idx][target]
+        
+        # Calculate residuals for training and validation
+        y_train_res = y_train - X_train['scaled_demand48']
+        y_val_res = y_val - X_val['scaled_demand48']
         
         # 1. LightGBM
         model_lgb = lgb.LGBMRegressor(**lgb_params)
-        model_lgb.fit(X_train, y_train, eval_set=[(X_val, y_val)], callbacks=[lgb.early_stopping(50, verbose=False)])
-        oof_lgb[val_idx] = np.clip(model_lgb.predict(X_val), 0.0, 1.0)
-        test_lgb += np.clip(model_lgb.predict(test_feat[features]), 0.0, 1.0) / 5.0
+        model_lgb.fit(X_train, y_train_res, eval_set=[(X_val, y_val_res)], callbacks=[lgb.early_stopping(50, verbose=False)])
+        pred_res_val = model_lgb.predict(X_val)
+        oof_lgb[val_idx] = np.clip(X_val['scaled_demand48'] + pred_res_val, 0.0, 1.0)
+        test_res_lgb += model_lgb.predict(test_feat[features]) / 5.0
         
         # 2. XGBoost
         model_xgb = xgb.XGBRegressor(**xgb_params, early_stopping_rounds=50)
-        model_xgb.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
-        oof_xgb[val_idx] = np.clip(model_xgb.predict(X_val), 0.0, 1.0)
-        test_xgb += np.clip(model_xgb.predict(test_feat[features]), 0.0, 1.0) / 5.0
+        model_xgb.fit(X_train, y_train_res, eval_set=[(X_val, y_val_res)], verbose=False)
+        pred_res_val = model_xgb.predict(X_val)
+        oof_xgb[val_idx] = np.clip(X_val['scaled_demand48'] + pred_res_val, 0.0, 1.0)
+        test_res_xgb += model_xgb.predict(test_feat[features]) / 5.0
         
         # 3. CatBoost
         model_cb = cb.CatBoostRegressor(**cb_params, early_stopping_rounds=50)
-        model_cb.fit(X_train, y_train, eval_set=(X_val, y_val), verbose=False)
-        oof_cb[val_idx] = np.clip(model_cb.predict(X_val), 0.0, 1.0)
-        test_cb += np.clip(model_cb.predict(test_feat[features]), 0.0, 1.0) / 5.0
+        model_cb.fit(X_train, y_train_res, eval_set=(X_val, y_val_res), verbose=False)
+        pred_res_val = model_cb.predict(X_val)
+        oof_cb[val_idx] = np.clip(X_val['scaled_demand48'] + pred_res_val, 0.0, 1.0)
+        test_res_cb += model_cb.predict(test_feat[features]) / 5.0
         
         # Calculate fold metrics
         r2_lgb = r2_score(y_val, oof_lgb[val_idx]) * 100
@@ -141,12 +143,14 @@ def train_and_evaluate():
     print("="*50)
     
     print("\nStep 5: Generating Submission File...")
-    final_preds = (test_lgb + test_xgb + test_cb) / 3.0
+    blended_test_res = (test_res_lgb + test_res_xgb + test_res_cb) / 3.0
+    final_preds = test_feat['scaled_demand48'] + blended_test_res
+    final_preds = np.clip(final_preds, 0.0, 1.0)
     
     # Construct submission dataframe
     submission = pd.DataFrame({
         'Index': test_feat['Index'].astype(int),
-        'demand': np.clip(final_preds, 0.0, 1.0)
+        'demand': final_preds
     })
     
     # Validate structure

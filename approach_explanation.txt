@@ -1,22 +1,34 @@
 Traffic Demand Prediction System - Approach Explanation
 
 1. Overall Approach
-Our objective was to build a highly accurate, leak-free machine learning system to predict traffic demand for Day 49 daytime (2:15 to 13:45) based on historical traffic patterns from Day 48 (full day) and the early morning of Day 49 (0:00 to 2:00). We set up a robust cross-validation strategy using 5-fold CV on the Day 49 early morning records while ensembling Day 48 full-day data to allow tree models to learn daytime peaks and weather/temperature dynamics.
+Our objective was to build a highly accurate, leak-free machine learning system to predict traffic demand for Day 49 daytime (2:15 to 13:45) based on historical traffic patterns from Day 48 (full day) and the early morning of Day 49 (0:00 to 2:00). 
+
+Because Gradient Boosted Decision Trees (GBDTs) cannot extrapolate target values beyond their training range, training trees directly on early morning data (where demand values are low or distinct) prevents them from correctly predicting daytime demand peaks. To solve this, we designed a **Residual GBDT Ensemble Model**:
+1. We compute a scaled historical demand baseline for Day 49:
+   scaled_demand48(g, t) = demand48(g, t) * geohash_ratio(g)
+   where geohash_ratio(g) is the scaling ratio of Day 49 early morning traffic to Day 48 early morning traffic.
+2. The GBDT ensemble is trained on Day 49 early morning records to predict the residual difference:
+   residual = demand49 - scaled_demand48
+3. For the test set, the final prediction is the sum of the scaled baseline and the ensembled residual predictions:
+   final_prediction = scaled_demand48 + ensembled_residual
+This architecture allows the model to naturally capture the exact daytime shape, peaks, and details from Day 48 while scaling them accurately for Day 49, bypassing the extrapolation limits of tree models.
 
 2. Feature Engineering Details
-To extract maximum predictive power from sparse geographic and temporal data, we designed a comprehensive feature engineering pipeline:
-- Geospatial decoding: We decoded the 6-character geohash strings into raw latitude and longitude coordinates, allowing GBDTs to capture continuous spatial trends.
+To extract maximum predictive power, we designed a comprehensive feature engineering pipeline:
+- Geospatial decoding: We decoded the 6-character geohash strings into raw latitude and longitude coordinates, allowing trees to split on continuous spatial inputs.
 - Cyclical temporal encoding: We mapped the timestamp (H:M format) into minutes from midnight (0 to 1425) and applied sine and cosine transformations to capture periodic daily traffic patterns.
 - Same-day early morning scaling: Day 49 traffic overall is significantly higher than Day 48. We extracted individual location traffic patterns from 0:00 to 2:00 on Day 49 to set the scaling factor for predictions.
 - Hierarchical geospatial prefix aggregations: For geohashes with sparse records or new locations, we computed spatial neighborhood averages using prefix lengths of 4 and 5. We calculated both neighborhood overall averages and same-day early morning neighborhood averages. This acts as an excellent proxy/imputation fallback for missing lags.
-- Neighborhood-Scaled Imputation: For the 123 geohashes in the test set that had no early morning Day 49 data, we imputed their early morning average using their Day 48 early morning average scaled by their neighborhood's observed Day 49 / Day 48 scaling ratio. This avoids flat global average bias and yields highly realistic local demand profiles.
+- Neighborhood-Scaled Imputation: For the 123 geohashes in the test set that had no early morning Day 49 data, we imputed their scaling factor using their Day 48 early morning average scaled by their neighborhood's observed Day 49 / Day 48 ratio:
+  early_49(g) = early_48(g) * prefix5_ratio(g)
+  This localized scaling ratio avoids flat global average bias and yields highly realistic local demand profiles.
 
 3. Models & Tools Used
 We used Python 3 with the following libraries:
 - pandas & numpy: For data loading, manipulation, and grid interpolation.
 - scikit-learn: For preprocessing (OrdinalEncoder) and metric evaluation.
 - LightGBM, XGBoost, CatBoost: Three state-of-the-art gradient boosted decision tree libraries.
-We trained an ensemble of all three models across 5 folds. The models were configured with early stopping on the validation folds to avoid overfitting. The final blended ensemble reached an out-of-fold (OOF) validation R2 score of 95.67%.
+We trained an ensemble of all three models across 5 folds. The models were configured with early stopping on the validation folds to avoid overfitting. The final blended ensemble reached an out-of-fold (OOF) validation R2 score of 95.55%.
 
 4. Code Structure
 - src/utils.py: Basic geospatial decoding, cyclical time parsing, and mapping-based temperature/weather imputation.
