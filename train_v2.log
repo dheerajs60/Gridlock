@@ -1,0 +1,53 @@
+Step 1: Loading Data...
+Step 2: Feature Engineering...
+Step 3: Building Day 48 grid...
+Step 4: Computing scaling ratios...
+  Global ratio Day49/Day48 early morning: 1.7957
+Step 5: Preparing features...
+  Computing training features (Day 48 full day + Day 49 early morning)...
+  Computing test features...
+Step 6: Setting up cross-validation...
+  Day 48 training rows: 69427
+  Day 49 early morning rows: 7872
+  Test (Day 49 daytime) rows: 41778
+
+Step 7: Training models...
+
+--- Fold 0 ---
+  LGBM: 89.6932%  XGB: 89.4821%  CB: 90.2692%
+
+--- Fold 1 ---
+  LGBM: 90.2167%  XGB: 90.2071%  CB: 90.8901%
+
+--- Fold 2 ---
+  LGBM: 90.6317%  XGB: 90.3424%  CB: 90.5595%
+
+--- Fold 3 ---
+  LGBM: 89.1261%  XGB: 89.0969%  CB: 89.5313%
+
+--- Fold 4 ---
+  LGBM: 89.2350%  XGB: 89.2054%  CB: 89.7755%
+
+
+Step 8: OOF Metrics...
+==================================================
+OOF R2 LightGBM:  89.7859%
+OOF R2 XGBoost:   89.6695%
+OOF R2 CatBoost:  90.2151%
+OOF R2 Ensemble:  90.0109%
+==================================================
+Pure scaled_demand48 baseline: 84.7860%
+
+Step 9: Optimal blending...
+Best alpha (GBDT weight): 0.700, score: 91.2384%
+
+Final predictions statistics:
+  Mean: 0.1357
+  Std: 0.1791
+  Min: 0.0005
+  Max: 1.0000
+
+Step 10: Saving submission...
+Saved to submission_v2.csv
+Shape: (41778, 2)
+All validation checks passed!
