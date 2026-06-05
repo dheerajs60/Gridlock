@@ -127,36 +127,80 @@ def build_features(df, train_df=None, is_train=True):
     
     # Non-leaky early_49: subtract current row's demand if it is part of Day 49 early morning
     is_d49_early = (df['day'] == 49) & (df['time_minutes'] <= 120)
-    df['early_49'] = np.where(
+    df['early_49_obs'] = np.where(
         is_d49_early,
         (df['sum'] - df['demand'].fillna(0.0)) / (df['count'] - 1).clip(lower=1),
         df['sum'] / df['count'].clip(lower=1)
     )
-    df['early_49'] = df['early_49'].fillna(df['early_49'].mean())
+    df['early_49_obs'] = np.where(df['count'] == 0, np.nan, df['early_49_obs'])
     
-    # Drop temporary sum and count columns
-    df = df.drop(columns=['sum', 'count'])
-    
-    # Day 49 early morning neighborhood averages (non-leaky)
-    early_by_geohash = d49_early_rows.groupby('geohash')['demand'].mean().reset_index().rename(columns={'demand': 'early_mean_g'})
+    # Neighborhood and global ratios for imputation
+    early_by_geohash = d49_early_rows.groupby('geohash')['demand'].mean().reset_index().rename(columns={'demand': 'early_49_g'})
+    early_by_geohash = early_by_geohash.merge(d48_early, on='geohash', how='left')
+    early_by_geohash['early_48'] = early_by_geohash['early_48'].fillna(early_by_geohash['early_48'].mean())
     early_by_geohash['geohash_prefix5'] = early_by_geohash['geohash'].str[:5]
     early_by_geohash['geohash_prefix4'] = early_by_geohash['geohash'].str[:4]
     
-    prefix5_sums = early_by_geohash.groupby('geohash_prefix5')['early_mean_g'].agg(['sum', 'count']).reset_index()
+    prefix5_means = early_by_geohash.groupby('geohash_prefix5')[['early_49_g', 'early_48']].mean().reset_index()
+    prefix5_means.columns = ['geohash_prefix5', 'prefix5_early_49', 'prefix5_early_48']
+    prefix5_means['prefix5_ratio'] = (prefix5_means['prefix5_early_49'] + 0.01) / (prefix5_means['prefix5_early_48'] + 0.01)
+    
+    prefix4_means = early_by_geohash.groupby('geohash_prefix4')[['early_49_g', 'early_48']].mean().reset_index()
+    prefix4_means.columns = ['geohash_prefix4', 'prefix4_early_49', 'prefix4_early_48']
+    prefix4_means['prefix4_ratio'] = (prefix4_means['prefix4_early_49'] + 0.01) / (prefix4_means['prefix4_early_48'] + 0.01)
+    
+    df = df.merge(prefix5_means[['geohash_prefix5', 'prefix5_ratio', 'prefix5_early_49']], on='geohash_prefix5', how='left')
+    df = df.merge(prefix4_means[['geohash_prefix4', 'prefix4_ratio', 'prefix4_early_49']], on='geohash_prefix4', how='left')
+    
+    global_early_49 = d49_early_rows['demand'].mean()
+    global_early_48 = day48_clean[day48_clean['time_minutes'] <= 120]['demand'].mean()
+    global_ratio = (global_early_49 + 0.01) / (global_early_48 + 0.01)
+    
+    df['prefix5_ratio'] = df['prefix5_ratio'].fillna(global_ratio)
+    df['prefix4_ratio'] = df['prefix4_ratio'].fillna(global_ratio)
+    df['prefix5_early_49'] = df['prefix5_early_49'].fillna(global_early_49)
+    df['prefix4_early_49'] = df['prefix4_early_49'].fillna(global_early_49)
+    
+    d48_early_raw = d48_early.rename(columns={'early_48': 'early_48_raw'})
+    df = df.merge(d48_early_raw, on='geohash', how='left')
+    
+    early_49_imputed = []
+    for idx, row in df.iterrows():
+        if not np.isnan(row['early_49_obs']):
+            early_49_imputed.append(row['early_49_obs'])
+        elif not np.isnan(row['early_48_raw']):
+            early_49_imputed.append(row['early_48_raw'] * row['prefix5_ratio'])
+        else:
+            early_49_imputed.append(row['prefix5_early_49'])
+    df['early_49'] = early_49_imputed
+    
+    # Clean up temp columns
+    df = df.drop(columns=['sum', 'count', 'early_49_obs', 'early_48_raw', 'prefix5_ratio', 'prefix4_ratio', 'prefix5_early_49', 'prefix4_early_49'], errors='ignore')
+    
+    # Day 49 early morning neighborhood averages (non-leaky)
+    prefix5_sums = early_by_geohash.groupby('geohash_prefix5')['early_49_g'].agg(['sum', 'count']).reset_index()
     prefix5_sums.columns = ['geohash_prefix5', 'prefix5_sum', 'prefix5_count']
     
-    prefix4_sums = early_by_geohash.groupby('geohash_prefix4')['early_mean_g'].agg(['sum', 'count']).reset_index()
+    prefix4_sums = early_by_geohash.groupby('geohash_prefix4')['early_49_g'].agg(['sum', 'count']).reset_index()
     prefix4_sums.columns = ['geohash_prefix4', 'prefix4_sum', 'prefix4_count']
     
     early_by_geohash = early_by_geohash.merge(prefix5_sums, on='geohash_prefix5', how='left')
     early_by_geohash = early_by_geohash.merge(prefix4_sums, on='geohash_prefix4', how='left')
     
-    early_by_geohash['early_49_prefix5'] = (early_by_geohash['prefix5_sum'] - early_by_geohash['early_mean_g']) / (early_by_geohash['prefix5_count'] - 1).clip(lower=1)
-    early_by_geohash['early_49_prefix4'] = (early_by_geohash['prefix4_sum'] - early_by_geohash['early_mean_g']) / (early_by_geohash['prefix4_count'] - 1).clip(lower=1)
+    early_by_geohash['early_49_prefix5'] = (early_by_geohash['prefix5_sum'] - early_by_geohash['early_49_g']) / (early_by_geohash['prefix5_count'] - 1).clip(lower=1)
+    early_by_geohash['early_49_prefix4'] = (early_by_geohash['prefix4_sum'] - early_by_geohash['early_49_g']) / (early_by_geohash['prefix4_count'] - 1).clip(lower=1)
     
     df = df.merge(early_by_geohash[['geohash', 'early_49_prefix5', 'early_49_prefix4']], on='geohash', how='left')
-    df['early_49_prefix5'] = df['early_49_prefix5'].fillna(df['early_49_prefix5'].mean())
-    df['early_49_prefix4'] = df['early_49_prefix4'].fillna(df['early_49_prefix4'].mean())
+    
+    prefix5_means_std = prefix5_means.rename(columns={'prefix5_early_49': 'early_49_prefix5_std'})
+    prefix4_means_std = prefix4_means.rename(columns={'prefix4_early_49': 'early_49_prefix4_std'})
+    df = df.merge(prefix5_means_std[['geohash_prefix5', 'early_49_prefix5_std']], on='geohash_prefix5', how='left')
+    df = df.merge(prefix4_means_std[['geohash_prefix4', 'early_49_prefix4_std']], on='geohash_prefix4', how='left')
+    
+    df['early_49_prefix5'] = df['early_49_prefix5'].fillna(df['early_49_prefix5_std']).fillna(global_early_49)
+    df['early_49_prefix4'] = df['early_49_prefix4'].fillna(df['early_49_prefix4_std']).fillna(global_early_49)
+    
+    df = df.drop(columns=['early_49_prefix5_std', 'early_49_prefix4_std'], errors='ignore')
     
     # Final safety checks for all non-target columns
     feature_cols = [c for c in df.columns if c != 'demand']
