@@ -5,3 +5,5 @@ scratch_*
 train.log
 test_combined_nonleaky.py
 test_residual_*
+test_gbdt_direct.py
+test_pure_scaling.py
