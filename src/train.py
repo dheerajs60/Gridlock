@@ -34,23 +34,19 @@ def train_and_evaluate():
     
     features = [
         'RoadType', 'NumberofLanes', 'LargeVehicles', 'Landmarks', 'Temperature', 'Weather',
-        'latitude', 'longitude',
+        'hour', 'minute', 'time_minutes', 'sin_time', 'cos_time', 'latitude', 'longitude',
         'geohash', 'geohash_prefix4', 'geohash_prefix5',
-        'early_48', 'early_49', 'early_49_prefix5', 'early_49_prefix4',
-        'demand_day48_t', 'demand_day48_t_minus_15', 'demand_day48_t_minus_30', 'demand_day48_t_minus_60',
-        'demand_day48_t_plus_15', 'demand_day48_t_plus_30', 'demand_day48_t_plus_60',
-        'demand_day48_rolling_mean_30', 'demand_day48_rolling_mean_60',
-        'day48_overall_mean', 'day48_overall_std', 'day48_overall_max', 'day48_overall_min',
-        'day48_prefix5_mean', 'day48_prefix5_std', 'day48_prefix5_max', 'day48_prefix5_min',
-        'day48_prefix4_mean', 'day48_prefix4_std', 'day48_prefix4_max', 'day48_prefix4_min',
+        'early_48', 'early_demand', 'early_demand_prefix5', 'early_demand_prefix4',
         'demand_day48_prefix5_t', 'demand_day48_prefix4_t', 'city_profile_day48'
     ]
     
     target = 'demand'
     
-    # Split out Day 49 training rows
+    # Split into Day 48 and Day 49
+    train_48 = train_feat[train_feat['day'] == 48].copy()
     train_49 = train_feat[train_feat['day'] == 49].copy()
     
+    print(f"Train Day 48 shape: {train_48.shape}")
     print(f"Train Day 49 shape: {train_49.shape}")
     print(f"Test Day 49 shape: {test_feat.shape}")
     
@@ -68,34 +64,38 @@ def train_and_evaluate():
     test_cb = np.zeros(len(test_feat))
     
     lgb_params = {
-        'n_estimators': 800,
+        'n_estimators': 1000,
         'learning_rate': 0.05,
-        'num_leaves': 31,
+        'num_leaves': 63,
         'verbose': -1,
         'random_state': 42
     }
     
     xgb_params = {
-        'n_estimators': 800,
+        'n_estimators': 1000,
         'learning_rate': 0.05,
-        'max_depth': 5,
+        'max_depth': 6,
         'verbosity': 0,
         'random_state': 42
     }
     
     cb_params = {
-        'iterations': 800,
+        'iterations': 1000,
         'learning_rate': 0.05,
-        'depth': 5,
+        'depth': 6,
         'verbose': 0,
         'random_seed': 42
     }
     
-    print("\nStep 3: Starting Cross-Validation & Training on Day 49 early morning...")
+    print("\nStep 3: Starting Cross-Validation & Training on combined leak-free dataset...")
     for fold, (train_idx, val_idx) in enumerate(kf.split(train_49)):
         print(f"\n--- Training Fold {fold} ---")
         
-        X_train, y_train = train_49.iloc[train_idx][features], train_49.iloc[train_idx][target]
+        # Training fold: Day 48 (entire day) + 4/5 of Day 49 (early morning)
+        fold_train_49 = train_49.iloc[train_idx]
+        fold_train = pd.concat([train_48, fold_train_49], ignore_index=True)
+        
+        X_train, y_train = fold_train[features], fold_train[target]
         X_val, y_val = train_49.iloc[val_idx][features], train_49.iloc[val_idx][target]
         
         # 1. LightGBM

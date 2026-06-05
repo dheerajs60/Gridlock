@@ -1,25 +1,26 @@
 Traffic Demand Prediction System - Approach Explanation
 
 1. Overall Approach
-Our objective was to build a highly accurate machine learning system to predict traffic demand (demand) for the later part of Day 49 (2:15 to 13:45) based on historical traffic patterns from Day 48 and the early morning of Day 49 (0:00 to 2:00). We set up a robust temporal cross-validation strategy using 5-fold CV to optimize the model parameters and ensemble predictions.
+Our objective was to build a highly accurate, leak-free machine learning system to predict traffic demand for Day 49 daytime (2:15 to 13:45) based on historical traffic patterns from Day 48 (full day) and the early morning of Day 49 (0:00 to 2:00). We set up a robust cross-validation strategy using 5-fold CV on the Day 49 early morning records while ensembling Day 48 full-day data to allow tree models to learn daytime peaks and weather/temperature dynamics.
 
 2. Feature Engineering Details
 To extract maximum predictive power from sparse geographic and temporal data, we designed a comprehensive feature engineering pipeline:
-- Geospatial decoding: We decoded the 6-character geohash strings into raw latitude and longitude coordinates. This provides continuous spatial inputs that allow trees to split on coordinates.
+- Geospatial decoding: We decoded the 6-character geohash strings into raw latitude and longitude coordinates, allowing GBDTs to capture continuous spatial trends.
 - Cyclical temporal encoding: We mapped the timestamp (H:M format) into minutes from midnight (0 to 1425) and applied sine and cosine transformations to capture periodic daily traffic patterns.
-- Same-day early morning scaling: Day 49 traffic overall is significantly higher than Day 48. We extracted individual location traffic patterns from 0:00 to 2:00 on Day 49 (specifically, demand at 1:00, 1:15, 1:30, 1:45, and 2:00, along with the early morning average) to set the scaling factor for predictions.
-- Hierarchical geospatial prefix aggregations: For geohashes with sparse records or new locations, we computed spatial neighborhood averages using prefix lengths of 4 and 5 (representing larger geographic boundaries). We calculated both neighborhood overall averages and same-day early morning neighborhood averages. This acts as an excellent proxy/imputation fallback for missing lags.
-- Historical temporal lags: We built a complete interpolated grid of Day 48 demand and extracted demand for each geohash at time t, t-15, t-30, t-60, t+15, t+30, and t+60, along with rolling averages.
+- Same-day early morning scaling: Day 49 traffic overall is significantly higher than Day 48. We extracted individual location traffic patterns from 0:00 to 2:00 on Day 49 to set the scaling factor for predictions.
+- Hierarchical geospatial prefix aggregations: For geohashes with sparse records or new locations, we computed spatial neighborhood averages using prefix lengths of 4 and 5. We calculated both neighborhood overall averages and same-day early morning neighborhood averages. This acts as an excellent proxy/imputation fallback for missing lags.
+- Neighborhood-Scaled Imputation: For the 123 geohashes in the test set that had no early morning Day 49 data, we imputed their early morning average using their Day 48 early morning average scaled by their neighborhood's observed Day 49 / Day 48 scaling ratio. This avoids flat global average bias and yields highly realistic local demand profiles.
 
 3. Models & Tools Used
 We used Python 3 with the following libraries:
 - pandas & numpy: For data loading, manipulation, and grid interpolation.
 - scikit-learn: For preprocessing (OrdinalEncoder) and metric evaluation.
 - LightGBM, XGBoost, CatBoost: Three state-of-the-art gradient boosted decision tree libraries.
-We trained an ensemble of all three models across 5 folds. The models were configured with early stopping on the validation folds to avoid overfitting. The final out-of-fold (OOF) validation R2 score reached an outstanding 96.18%.
+We trained an ensemble of all three models across 5 folds. The models were configured with early stopping on the validation folds to avoid overfitting. The final blended ensemble reached an out-of-fold (OOF) validation R2 score of 95.67%.
 
 4. Code Structure
 - src/utils.py: Basic geospatial decoding, cyclical time parsing, and mapping-based temperature/weather imputation.
-- src/features.py: Main feature extraction and grid construction pipeline.
+- src/features.py: Main feature engineering, neighborhood profiling, and Neighborhood-Scaled Imputation pipeline.
 - src/train.py: K-fold training, model ensembling, out-of-fold validation, and submission formatting.
 - Traffic_Demand_Prediction.ipynb: End-to-end interactive notebook containing the entire pipeline.
+- verify_submission.py: Script to run validation and integrity checks on the generated submission.csv.
